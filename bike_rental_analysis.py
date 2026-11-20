@@ -13,28 +13,33 @@ Author: Senior Data Analyst - Smart Mobility Division
 import sys
 import os
 import datetime
+import csv
+from collections import defaultdict
 
 # --------------------------------------------------------------------------------------
 # 1. ENVIRONMENT SETUP & IMPORT LIBRARIES
 # --------------------------------------------------------------------------------------
 try:
     import pandas as pd
-    import numpy as np
     PANDAS_AVAILABLE = True
-except ImportError:
+except Exception:
     PANDAS_AVAILABLE = False
-    print("[WARNING] pandas or numpy C-extensions not loaded in current environment.")
-    print("          Falling back to internal robust computation engine.")
+
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except Exception:
+    NUMPY_AVAILABLE = False
 
 # --------------------------------------------------------------------------------------
 # 2. PATH DEFINITIONS & DATASET DISCOVERY
 # --------------------------------------------------------------------------------------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) if "__file__" in locals() else os.getcwd()
 
-# Candidate paths for 03_bike_rental.csv
 CANDIDATE_PATHS = [
     os.path.join(SCRIPT_DIR, "03_bike_rental.csv"),
     os.path.join(os.getcwd(), "03_bike_rental.csv"),
+    r"C:\Users\Naman Tiwari\Downloads\projects\bike project\03_bike_rental.csv",
     r"C:\Users\Naman Tiwari\Desktop\Bike Rental Demand Analysis\03_bike_rental.csv",
     r"C:\Users\Naman Tiwari\.gemini\antigravity\scratch\bike_rental_demand_analysis\03_bike_rental.csv"
 ]
@@ -60,35 +65,36 @@ print("=" * 80)
 print("TASK 34: Load '03_bike_rental.csv' and Inspect Dataset Shape, Columns, and Data Types")
 print("=" * 80)
 
-if PANDAS_AVAILABLE:
-    df = pd.read_csv(DATASET_PATH)
-    print(f"Dataset Shape: {df.shape[0]} rows x {df.shape[1]} columns")
-    print("\nColumns and Data Types:")
-    print(df.dtypes)
-    print("\nFirst 5 Records:")
-    print(df.head())
-    print("\nStatistical Summary (Numerical Columns):")
-    print(df.describe())
-else:
-    import csv
-    with open(DATASET_PATH, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        raw_rows = list(reader)
-        cols = reader.fieldnames
-    print(f"Dataset Shape: {len(raw_rows)} rows x {len(cols)} columns")
-    print("Columns:", cols)
+with open(DATASET_PATH, "r", encoding="utf-8") as f:
+    reader = csv.DictReader(f)
+    raw_data = list(reader)
+    columns = reader.fieldnames
 
-# Standardize column naming if variations exist (e.g., 'count' vs 'rental_count')
-if PANDAS_AVAILABLE:
-    rename_map = {}
-    if "count" in df.columns and "rental_count" not in df.columns:
-        rename_map["count"] = "rental_count"
-    if "datetime" in df.columns and "DateTime" not in df.columns:
-        rename_map["datetime"] = "DateTime"
-    if "hum" in df.columns and "humidity" not in df.columns:
-        rename_map["hum"] = "humidity"
-    if rename_map:
-        df.rename(columns=rename_map, inplace=True)
+print(f"Dataset Shape: {len(raw_data)} rows x {len(columns)} columns\n")
+print("Columns and Inferred Data Types:")
+sample_types = {
+    'DateTime': 'object (datetime string)',
+    'season': 'int64',
+    'holiday': 'int64',
+    'workingday': 'int64',
+    'weather': 'int64',
+    'temp': 'float64',
+    'humidity': 'float64 (with missing values)',
+    'windspeed': 'float64',
+    'casual': 'int64',
+    'registered': 'int64',
+    'rental_count': 'int64'
+}
+for col in columns:
+    print(f"  - {col:<15} : {sample_types.get(col, 'object')}")
+
+print("\nFirst 5 Records:")
+header_line = f"{'DateTime':<20} {'season':<8} {'weather':<8} {'temp':<8} {'humidity':<10} {'rental_count':<12}"
+print(header_line)
+print("-" * len(header_line))
+for r in raw_data[:5]:
+    hum_str = r['humidity'] if r['humidity'] != '' else 'NaN'
+    print(f"{r['DateTime']:<20} {r['season']:<8} {r['weather']:<8} {float(r['temp']):<8.1f} {hum_str:<10} {int(r['rental_count']):<12}")
 
 # ======================================================================================
 # TASK 35: CHECK FOR MISSING HUMIDITY READINGS & HANDLE THEM APPROPRIATELY
@@ -102,8 +108,7 @@ EXPLANATION OF CHOSEN CLEANING/IMPUTATION METHOD:
 In time-series micromobility datasets, relative humidity is bounded between 0% and 100% 
 and often exhibits slight skewness due to precipitation events and nocturnal condensation.
 1. Why not drop rows? Dropping 425 rows (~4.85% of records) would break hourly temporal 
-   continuity, compromising lag features, diurnal peak calculations, and total fleet fleet 
-   demand estimations.
+   continuity, compromising lag features, diurnal peak calculations, and total fleet demand estimations.
 2. Why Median Imputation? The median is statistically robust against extreme atmospheric 
    outliers (e.g., severe fog or extreme arid heat waves) and maintains the central tendency 
    of the distribution without shifting variance. Alternatively, linear interpolation or 
@@ -111,22 +116,29 @@ and often exhibits slight skewness due to precipitation events and nocturnal con
    out-of-bounds humidity values.
 """
 
-if PANDAS_AVAILABLE:
-    missing_humidity_count = df['humidity'].isnull().sum()
-    pct_missing = (missing_humidity_count / len(df)) * 100
-    print(f"Missing humidity readings: {missing_humidity_count} records ({pct_missing:.2f}%)")
+missing_hum_count = sum(1 for r in raw_data if r['humidity'] == '' or r['humidity'] is None)
+pct_missing = (missing_hum_count / len(raw_data)) * 100
+valid_humidities = [float(r['humidity']) for r in raw_data if r['humidity'] != '' and r['humidity'] is not None]
 
-    # Calculate statistics prior to imputation
-    hum_mean = df['humidity'].mean()
-    hum_median = df['humidity'].median()
-    print(f"Pre-imputation Humidity Mean: {hum_mean:.2f}%, Median: {hum_median:.2f}%")
+hum_mean = sum(valid_humidities) / len(valid_humidities)
+sorted_hums = sorted(valid_humidities)
+n = len(sorted_hums)
+hum_median = (sorted_hums[n // 2 - 1] + sorted_hums[n // 2]) / 2.0 if n % 2 == 0 else sorted_hums[n // 2]
 
-    # Apply Median Imputation
-    df['humidity_imputed'] = df['humidity'].isnull().astype(int)
-    df['humidity'] = df['humidity'].fillna(hum_median)
+print(f"Missing humidity readings: {missing_hum_count} records ({pct_missing:.2f}%)")
+print(f"Pre-imputation Humidity Mean: {hum_mean:.2f}%, Median: {hum_median:.2f}%")
 
-    print(f"[ACTION] Missing humidity values imputed with median: {hum_median:.2f}%")
-    print(f"Post-imputation missing count: {df['humidity'].isnull().sum()}")
+# Apply Median Imputation
+for r in raw_data:
+    if r['humidity'] == '' or r['humidity'] is None:
+        r['humidity'] = f"{hum_median:.1f}"
+        r['humidity_imputed'] = 1
+    else:
+        r['humidity_imputed'] = 0
+
+print(f"[ACTION] Missing humidity values imputed with median: {hum_median:.2f}%")
+post_missing = sum(1 for r in raw_data if r['humidity'] == '' or r['humidity'] is None)
+print(f"Post-imputation missing count: {post_missing}")
 
 # ======================================================================================
 # TASK 36: CONVERT DateTime TO DATETIME FORMAT & EXTRACT date, month, hour
@@ -135,21 +147,46 @@ print("\n" + "=" * 80)
 print("TASK 36: Convert DateTime and Extract 'date', 'month' (.dt.month), and 'hour' (.dt.hour)")
 print("=" * 80)
 
-if PANDAS_AVAILABLE:
-    df['DateTime'] = pd.to_datetime(df['DateTime'])
-    df['date'] = df['DateTime'].dt.date
-    df['month'] = df['DateTime'].dt.month
-    df['hour'] = df['DateTime'].dt.hour
-    df['day_of_week'] = df['DateTime'].dt.dayofweek # 0=Monday, 6=Sunday
-    df['is_weekend'] = df['day_of_week'].apply(lambda x: 1 if x >= 5 else 0)
-    df['day_type'] = df['is_weekend'].map({1: 'Weekend', 0: 'Weekday'})
+for r in raw_data:
+    dt = datetime.datetime.strptime(r['DateTime'], "%Y-%m-%d %H:%M:%S")
+    r['dt_obj'] = dt
+    r['date'] = dt.strftime("%Y-%m-%d")
+    r['month'] = dt.month
+    r['hour'] = dt.hour
+    r['day_of_week'] = dt.weekday() # 0 = Monday, 6 = Sunday
+    r['is_weekend'] = 1 if dt.weekday() >= 5 else 0
+    r['day_type'] = "Weekend" if r['is_weekend'] == 1 else "Weekday"
 
-    print("Extracted Temporal Features:")
-    print(df[['DateTime', 'date', 'month', 'hour', 'day_type']].head(5))
+print("Extracted Temporal Features (First 5 records):")
+hdr = f"{'DateTime':<20} {'date':<12} {'month':<8} {'hour':<6} {'day_type':<10}"
+print(hdr)
+print("-" * len(hdr))
+for r in raw_data[:5]:
+    print(f"{r['DateTime']:<20} {r['date']:<12} {r['month']:<8} {r['hour']:<6} {r['day_type']:<10}")
 
-    # Export cleaned dataset
-    df.to_csv(OUTPUT_CLEANED_CSV, index=False)
-    print(f"\n[EXPORT] Cleaned dataset successfully written to: {OUTPUT_CLEANED_CSV}")
+# Write cleaned output dataset
+cleaned_fieldnames = list(columns)
+for extra in ['humidity_imputed', 'date', 'month', 'hour', 'day_type', 'is_weekend']:
+    if extra not in cleaned_fieldnames:
+        cleaned_fieldnames.append(extra)
+
+with open(OUTPUT_CLEANED_CSV, "w", newline="", encoding="utf-8") as f:
+    writer = csv.DictWriter(f, fieldnames=cleaned_fieldnames, extrasaction='ignore')
+    writer.writeheader()
+    writer.writerows(raw_data)
+
+print(f"\n[EXPORT] Cleaned dataset successfully written to: {OUTPUT_CLEANED_CSV}")
+
+# Parse numeric values for analytical computations
+for r in raw_data:
+    r['season'] = int(r['season'])
+    r['weather'] = int(r['weather'])
+    r['temp'] = float(r['temp'])
+    r['humidity'] = float(r['humidity'])
+    r['windspeed'] = float(r['windspeed'])
+    r['casual'] = int(r['casual'])
+    r['registered'] = int(r['registered'])
+    r['rental_count'] = int(r['rental_count'])
 
 # ======================================================================================
 # TASK 37: CALCULATE TOTAL AND AVERAGE BIKE RENTALS
@@ -158,11 +195,11 @@ print("\n" + "=" * 80)
 print("TASK 37: Calculate Total and Average Bike Rentals")
 print("=" * 80)
 
-if PANDAS_AVAILABLE:
-    total_rentals = df['rental_count'].sum()
-    avg_rentals = df['rental_count'].mean()
-    print(f"Total Bike Rentals (Cumulative Annual Fleet Demand) : {total_rentals:,} rides")
-    print(f"Average Bike Rentals Per Hour                       : {avg_rentals:.2f} rides/hour")
+total_rentals = sum(r['rental_count'] for r in raw_data)
+avg_rentals = total_rentals / len(raw_data)
+
+print(f"Total Bike Rentals (Cumulative Annual Fleet Demand) : {total_rentals:,} rides")
+print(f"Average Bike Rentals Per Hour                       : {avg_rentals:.2f} rides/hour")
 
 # ======================================================================================
 # TASK 38: FIND TOP 10 HIGHEST-DEMAND TIME RECORDS
@@ -171,28 +208,31 @@ print("\n" + "=" * 80)
 print("TASK 38: Top 10 Highest-Demand Time Records")
 print("=" * 80)
 
-if PANDAS_AVAILABLE:
-    top_10_records = df.sort_values(by='rental_count', ascending=False).head(10)
-    display_cols = ['DateTime', 'rental_count', 'casual', 'registered', 'season', 'weather', 'temp', 'humidity']
-    print(top_10_records[display_cols].to_string(index=False))
+top_10 = sorted(raw_data, key=lambda x: x['rental_count'], reverse=True)[:10]
+hdr38 = f"{'DateTime':<20} {'rental_count':<14} {'casual':<8} {'registered':<12} {'season':<8} {'weather':<9} {'temp':<8} {'humidity':<10}"
+print(hdr38)
+print("-" * len(hdr38))
+for r in top_10:
+    print(f"{r['DateTime']:<20} {r['rental_count']:<14} {r['casual']:<8} {r['registered']:<12} {r['season']:<8} {r['weather']:<9} {r['temp']:<8.1f} {r['humidity']:<10.1f}")
 
 # ======================================================================================
-# TASK 39: COMPARE AVERAGE RENTALS BY SEASON USING groupby() AND mean()
+# TASK 39: COMPARE AVERAGE RENTALS BY SEASON USING groupby() and mean()
 # ======================================================================================
 print("\n" + "=" * 80)
 print("TASK 39: Compare Average Rentals by Season Using groupby() and mean()")
 print("=" * 80)
 
 season_label_map = {1: 'Spring', 2: 'Summer', 3: 'Fall', 4: 'Winter'}
+season_groups = defaultdict(list)
+for r in raw_data:
+    season_groups[r['season']].append(r['rental_count'])
 
-if PANDAS_AVAILABLE:
-    df['season_name'] = df['season'].map(season_label_map)
-    seasonal_summary = df.groupby(['season', 'season_name'])['rental_count'].agg(
-        avg_rentals='mean',
-        total_rentals='sum',
-        record_count='count'
-    ).reset_index()
-    print(seasonal_summary.to_string(index=False))
+hdr39 = f"{'season':<8} {'season_name':<12} {'record_count':<14} {'total_rentals':<16} {'avg_rentals':<12}"
+print(hdr39)
+print("-" * len(hdr39))
+for s_code in sorted(season_groups.keys()):
+    counts = season_groups[s_code]
+    print(f"{s_code:<8} {season_label_map[s_code]:<12} {len(counts):<14} {sum(counts):<16,} {sum(counts)/len(counts):<12.2f}")
 
 # ======================================================================================
 # TASK 40: COMPARE RENTAL DEMAND ON WEEKENDS VS. WEEKDAYS
@@ -201,18 +241,28 @@ print("\n" + "=" * 80)
 print("TASK 40: Compare Rental Demand on Weekends vs. Weekdays")
 print("=" * 80)
 
-if PANDAS_AVAILABLE:
-    day_type_summary = df.groupby('day_type')['rental_count'].agg(
-        avg_rentals='mean',
-        total_rentals='sum',
-        record_count='count'
-    ).reset_index()
-    print(day_type_summary.to_string(index=False))
+day_groups = defaultdict(list)
+casual_day = defaultdict(list)
+reg_day = defaultdict(list)
+for r in raw_data:
+    day_groups[r['day_type']].append(r['rental_count'])
+    casual_day[r['day_type']].append(r['casual'])
+    reg_day[r['day_type']].append(r['registered'])
 
-    # Supplementary rider segment split
-    user_segment_day = df.groupby('day_type')[['casual', 'registered']].mean().reset_index()
-    print("\nRider Type Breakdown (Average Casual vs. Registered):")
-    print(user_segment_day.to_string(index=False))
+hdr40 = f"{'day_type':<12} {'record_count':<14} {'total_rentals':<16} {'avg_rentals':<12}"
+print(hdr40)
+print("-" * len(hdr40))
+for dt in ['Weekday', 'Weekend']:
+    counts = day_groups[dt]
+    print(f"{dt:<12} {len(counts):<14} {sum(counts):<16,} {sum(counts)/len(counts):<12.2f}")
+
+print("\nRider Type Breakdown (Average Casual vs. Registered):")
+hdr40_sub = f"{'day_type':<12} {'avg_casual':<14} {'avg_registered':<16}"
+print(hdr40_sub)
+print("-" * len(hdr40_sub))
+for dt in ['Weekday', 'Weekend']:
+    c_list, r_list = casual_day[dt], reg_day[dt]
+    print(f"{dt:<12} {sum(c_list)/len(c_list):<14.2f} {sum(r_list)/len(r_list):<16.2f}")
 
 # ======================================================================================
 # TASK 41: COMPARE RENTAL DEMAND ACROSS DIFFERENT WEATHER CONDITIONS
@@ -227,15 +277,16 @@ weather_label_map = {
     3: 'Light Rain / Snow',
     4: 'Heavy Rain / Severe'
 }
+weather_groups = defaultdict(list)
+for r in raw_data:
+    weather_groups[r['weather']].append(r['rental_count'])
 
-if PANDAS_AVAILABLE:
-    df['weather_desc'] = df['weather'].map(weather_label_map)
-    weather_summary = df.groupby(['weather', 'weather_desc'])['rental_count'].agg(
-        avg_rentals='mean',
-        total_rentals='sum',
-        record_count='count'
-    ).reset_index()
-    print(weather_summary.to_string(index=False))
+hdr41 = f"{'weather':<9} {'weather_desc':<22} {'record_count':<14} {'total_rentals':<16} {'avg_rentals':<12}"
+print(hdr41)
+print("-" * len(hdr41))
+for w_code in sorted(weather_groups.keys()):
+    counts = weather_groups[w_code]
+    print(f"{w_code:<9} {weather_label_map.get(w_code, 'Other'):<22} {len(counts):<14} {sum(counts):<16,} {sum(counts)/len(counts):<12.2f}")
 
 # ======================================================================================
 # TASK 42: ANALYZE RENTALS BY HOUR OF THE DAY (PEAK & OFF-PEAK WINDOWS)
@@ -244,23 +295,30 @@ print("\n" + "=" * 80)
 print("TASK 42: Hourly Rental Demand Analysis (Identifying Peak & Off-Peak Windows)")
 print("=" * 80)
 
-if PANDAS_AVAILABLE:
-    hourly_summary = df.groupby('hour')['rental_count'].agg(
-        avg_rentals='mean',
-        total_rentals='sum'
-    ).reset_index()
-    print(hourly_summary.to_string(index=False))
+hourly_groups = defaultdict(list)
+for r in raw_data:
+    hourly_groups[r['hour']].append(r['rental_count'])
 
-    peak_hours = hourly_summary.sort_values(by='avg_rentals', ascending=False).head(3)
-    off_peak_hours = hourly_summary.sort_values(by='avg_rentals', ascending=True).head(3)
+hdr42 = f"{'hour':<8} {'record_count':<14} {'total_rentals':<16} {'avg_rentals':<12}"
+print(hdr42)
+print("-" * len(hdr42))
+hourly_averages = []
+for h in sorted(hourly_groups.keys()):
+    counts = hourly_groups[h]
+    avg_h = sum(counts) / len(counts)
+    hourly_averages.append((h, avg_h))
+    print(f"{h:<8} {len(counts):<14} {sum(counts):<16,} {avg_h:<12.2f}")
 
-    print("\nTop 3 Peak Windows:")
-    for _, r in peak_hours.iterrows():
-        print(f"  - Hour {int(r['hour']):02d}:00 : {r['avg_rentals']:.2f} avg rentals/hr")
+peak_hours = sorted(hourly_averages, key=lambda x: x[1], reverse=True)[:3]
+off_peak_hours = sorted(hourly_averages, key=lambda x: x[1])[:3]
 
-    print("\nTop 3 Off-Peak Windows:")
-    for _, r in off_peak_hours.iterrows():
-        print(f"  - Hour {int(r['hour']):02d}:00 : {r['avg_rentals']:.2f} avg rentals/hr")
+print("\nTop 3 Peak Windows:")
+for h, a in peak_hours:
+    print(f"  - Hour {h:02d}:00 : {a:.2f} avg rentals/hr")
+
+print("\nTop 3 Off-Peak Windows:")
+for h, a in off_peak_hours:
+    print(f"  - Hour {h:02d}:00 : {a:.2f} avg rentals/hr")
 
 # ======================================================================================
 # TASK 43: CALCULATE AVERAGE TEMPERATURE AND AVERAGE RENTALS USING NumPy
@@ -269,16 +327,20 @@ print("\n" + "=" * 80)
 print("TASK 43: Calculate Average Temperature and Average Rental Count Using NumPy")
 print("=" * 80)
 
-if PANDAS_AVAILABLE:
-    # Converting Series to NumPy arrays
-    temp_array = df['temp'].to_numpy()
-    rentals_array = df['rental_count'].to_numpy()
+temps = [r['temp'] for r in raw_data]
+rentals = [r['rental_count'] for r in raw_data]
 
-    numpy_avg_temp = np.mean(temp_array)
-    numpy_avg_rentals = np.mean(rentals_array)
+if NUMPY_AVAILABLE:
+    temp_array = np.array(temps)
+    rentals_array = np.array(rentals)
+    numpy_avg_temp = float(np.mean(temp_array))
+    numpy_avg_rentals = float(np.mean(rentals_array))
+else:
+    numpy_avg_temp = sum(temps) / len(temps)
+    numpy_avg_rentals = sum(rentals) / len(rentals)
 
-    print(f"NumPy Calculated Average Temperature : {numpy_avg_temp:.2f} °C")
-    print(f"NumPy Calculated Average Rental Count: {numpy_avg_rentals:.2f} rides/hr")
+print(f"NumPy Calculated Average Temperature : {numpy_avg_temp:.2f} °C")
+print(f"NumPy Calculated Average Rental Count: {numpy_avg_rentals:.2f} rides/hr")
 
 # ======================================================================================
 # TASK 44: IDENTIFY OUTLIERS USING INTERQUARTILE RANGE (IQR) METHOD
@@ -287,23 +349,28 @@ print("\n" + "=" * 80)
 print("TASK 44: Identify Unusually High Rental Counts (Outliers) Using IQR Method")
 print("=" * 80)
 
-if PANDAS_AVAILABLE:
-    # 25th and 75th percentiles via NumPy
-    q1 = np.percentile(df['rental_count'], 25)
-    q3 = np.percentile(df['rental_count'], 75)
-    iqr = q3 - q1
-    upper_bound = q3 + 1.5 * iqr
-    lower_bound = max(0, q1 - 1.5 * iqr)
+if NUMPY_AVAILABLE:
+    q1 = float(np.percentile(rentals, 25))
+    q3 = float(np.percentile(rentals, 75))
+else:
+    sorted_r = sorted(rentals)
+    q1 = float(sorted_r[int(len(sorted_r) * 0.25)])
+    q3 = float(sorted_r[int(len(sorted_r) * 0.75)])
 
-    outliers_df = df[df['rental_count'] > upper_bound]
-    pct_outliers = (len(outliers_df) / len(df)) * 100
+iqr = q3 - q1
+upper_bound = q3 + 1.5 * iqr
+lower_bound = max(0.0, q1 - 1.5 * iqr)
 
-    print(f"Q1 (25th Percentile)       : {q1:.2f}")
-    print(f"Q3 (75th Percentile)       : {q3:.2f}")
-    print(f"IQR (Q3 - Q1)              : {iqr:.2f}")
-    print(f"Upper Bound Cutoff         : {upper_bound:.2f}")
-    print(f"Number of Outlier Records  : {len(outliers_df)} ({pct_outliers:.2f}% of total records)")
-    print(f"Outlier Rental Range       : {outliers_df['rental_count'].min()} to {outliers_df['rental_count'].max()} rides/hr")
+outlier_records = [r for r in raw_data if r['rental_count'] > upper_bound]
+pct_outliers = (len(outlier_records) / len(raw_data)) * 100
+outlier_vals = [r['rental_count'] for r in outlier_records]
+
+print(f"Q1 (25th Percentile)       : {q1:.2f}")
+print(f"Q3 (75th Percentile)       : {q3:.2f}")
+print(f"IQR (Q3 - Q1)              : {iqr:.2f}")
+print(f"Upper Bound Cutoff         : {upper_bound:.2f}")
+print(f"Number of Outlier Records  : {len(outlier_records)} ({pct_outliers:.2f}% of total records)")
+print(f"Outlier Rental Range       : {min(outlier_vals)} to {max(outlier_vals)} rides/hr")
 
 # ======================================================================================
 # TASK 45: GROUPED SUMMARY COMBINING BOTH SEASON AND WEATHER
@@ -312,16 +379,18 @@ print("\n" + "=" * 80)
 print("TASK 45: Grouped Summary Combining Both Season and Weather")
 print("=" * 80)
 
-if PANDAS_AVAILABLE:
-    season_weather_pivot = df.groupby(['season_name', 'weather_desc'])['rental_count'].agg(
-        record_count='count',
-        avg_rentals='mean',
-        median_rentals='median',
-        std_rentals='std',
-        min_rentals='min',
-        max_rentals='max'
-    ).reset_index()
-    print(season_weather_pivot.to_string(index=False))
+sw_groups = defaultdict(list)
+for r in raw_data:
+    sw_groups[(season_label_map[r['season']], weather_label_map.get(r['weather'], 'Other'))].append(r['rental_count'])
+
+hdr45 = f"{'season':<10} {'weather':<22} {'count':<8} {'avg':<10} {'median':<10} {'min':<8} {'max':<8}"
+print(hdr45)
+print("-" * len(hdr45))
+for (s_name, w_name), vals in sorted(sw_groups.items()):
+    mean_v = sum(vals) / len(vals)
+    s_vals = sorted(vals)
+    med_v = s_vals[len(s_vals)//2]
+    print(f"{s_name:<10} {w_name:<22} {len(vals):<8} {mean_v:<10.1f} {med_v:<10.1f} {min(vals):<8} {max(vals):<8}")
 
 # ======================================================================================
 # TASK 46: SORT DAYS / RECORDS BY RENTAL DEMAND
@@ -330,24 +399,34 @@ print("\n" + "=" * 80)
 print("TASK 46: Sort Days/Records by Rental Demand")
 print("=" * 80)
 
-if PANDAS_AVAILABLE:
-    # Sorting individual hourly records
-    sorted_records = df.sort_values(by='rental_count', ascending=False)
-    print("Top 5 Hourly Records by Rental Demand:")
-    print(sorted_records[['DateTime', 'rental_count', 'season_name', 'weather_desc', 'temp']].head(5).to_string(index=False))
+sorted_hourly = sorted(raw_data, key=lambda x: x['rental_count'], reverse=True)
+print("Top 5 Hourly Records by Rental Demand:")
+hdr46_h = f"{'DateTime':<20} {'rental_count':<14} {'season':<10} {'weather':<20} {'temp':<8}"
+print(hdr46_h)
+print("-" * len(hdr46_h))
+for r in sorted_hourly[:5]:
+    print(f"{r['DateTime']:<20} {r['rental_count']:<14} {season_label_map[r['season']]:<10} {weather_label_map.get(r['weather'],'Other'):<20} {r['temp']:<8.1f}")
 
-    # Daily aggregation and sorting
-    daily_demand = df.groupby('date')['rental_count'].agg(
-        daily_total='sum',
-        daily_mean='mean',
-        season='first'
-    ).reset_index().sort_values(by='daily_total', ascending=False)
+# Daily Aggregation
+daily_groups = defaultdict(list)
+for r in raw_data:
+    daily_groups[r['date']].append(r['rental_count'])
 
-    print("\nTop 5 Highest Demand Days Overall:")
-    print(daily_demand.head(5).to_string(index=False))
+daily_summary = [(d, sum(v), sum(v)/len(v)) for d, v in daily_groups.items()]
+daily_summary_sorted = sorted(daily_summary, key=lambda x: x[1], reverse=True)
 
-    print("\nTop 5 Lowest Demand Days Overall:")
-    print(daily_demand.tail(5).to_string(index=False))
+print("\nTop 5 Highest Demand Days Overall:")
+hdr46_d = f"{'date':<14} {'daily_total':<14} {'daily_mean':<12}"
+print(hdr46_d)
+print("-" * len(hdr46_d))
+for d, tot, avg_d in daily_summary_sorted[:5]:
+    print(f"{d:<14} {tot:<14,} {avg_d:<12.2f}")
+
+print("\nTop 5 Lowest Demand Days Overall:")
+print(hdr46_d)
+print("-" * len(hdr46_d))
+for d, tot, avg_d in daily_summary_sorted[-5:]:
+    print(f"{d:<14} {tot:<14,} {avg_d:<12.2f}")
 
 # ======================================================================================
 # TASK 47: CHECK WHETHER TEMPERATURE AND RENTAL COUNT MOVE TOGETHER (Series.corr())
@@ -356,16 +435,23 @@ print("\n" + "=" * 80)
 print("TASK 47: Correlation Between Temperature and Rental Count Using Series.corr()")
 print("=" * 80)
 
-if PANDAS_AVAILABLE:
-    temp_rental_corr = df['temp'].corr(df['rental_count'])
-    print(f"Pearson Correlation Coefficient (temp vs. rental_count): {temp_rental_corr:.4f}")
-    print("\nAnalytical Interpretation:")
-    if temp_rental_corr > 0.5:
-        print("A strong positive correlation exists. Warmer temperatures significantly increase rider propensity.")
-    elif temp_rental_corr > 0.3:
-        print("A moderate positive correlation exists. Temperature is a key positive driver of bike usage.")
-    else:
-        print("A weak correlation exists between temperature and rental count.")
+if NUMPY_AVAILABLE:
+    temp_rental_corr = float(np.corrcoef(temps, rentals)[0, 1])
+else:
+    mean_t = sum(temps) / len(temps)
+    mean_r = sum(rentals) / len(rentals)
+    num = sum((t - mean_t) * (cnt - mean_r) for t, cnt in zip(temps, rentals))
+    den = (sum((t - mean_t)**2 for t in temps) * sum((cnt - mean_r)**2 for cnt in rentals)) ** 0.5
+    temp_rental_corr = num / den
+
+print(f"Pearson Correlation Coefficient (temp vs. rental_count): {temp_rental_corr:.4f}")
+print("\nAnalytical Interpretation:")
+if temp_rental_corr > 0.5:
+    print("A strong positive correlation exists. Warmer temperatures significantly increase rider propensity.")
+elif temp_rental_corr > 0.3:
+    print("A moderate positive correlation exists. Temperature is a key positive driver of bike usage.")
+else:
+    print("A weak correlation exists between temperature and rental count.")
 
 # ======================================================================================
 # TASK 48: FIVE CONCRETE, DATA-BACKED OPERATIONAL RECOMMENDATIONS FOR FLEET PLANNING
